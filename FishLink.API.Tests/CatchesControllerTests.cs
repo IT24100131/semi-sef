@@ -51,10 +51,10 @@ public sealed class CatchesControllerTests
         public Task<PagedResult<Catch>> GetCatchesAsync(CatchQueryParams q) => throw new NotImplementedException();
         public Task<IEnumerable<object>> GetMarketStatsAsync() => throw new NotImplementedException();
         public Task<object?> GetSellerHistoryAsync(int id) => throw new NotImplementedException();
-        public Task<bool> UpdateAsync(int id, CatchRequest r, int f) => throw new NotImplementedException();
-        public Task<bool> PublishAsync(int id, int f) => throw new NotImplementedException();
-        public Task<bool> CancelAsync(int id, int f) => throw new NotImplementedException();
-        public Task<bool> DeleteAsync(int id, int f) => throw new NotImplementedException();
+        public Task<bool> UpdateAsync(int id, CatchRequest r, int f, bool isAdmin = false) => throw new NotImplementedException();
+        public Task<bool> PublishAsync(int id, int f, bool isAdmin = false) => throw new NotImplementedException();
+        public Task<bool> CancelAsync(int id, int f, bool isAdmin = false) => throw new NotImplementedException();
+        public Task<bool> DeleteAsync(int id, int f, bool isAdmin = false) => throw new NotImplementedException();
         public Task<bool> ReceiveValidationResultAsync(ValidationResultRequest r) => throw new NotImplementedException();
         public Task<bool> AdminApproveAsync(int id) => throw new NotImplementedException();
         public Task<bool> AdminRejectAsync(int id) => throw new NotImplementedException();
