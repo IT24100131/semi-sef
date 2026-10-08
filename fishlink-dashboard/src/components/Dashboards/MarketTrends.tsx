@@ -3,7 +3,16 @@ import { BarChart3, RefreshCw, AlertCircle, Activity, Calendar } from 'lucide-re
 import axios from 'axios';
 import { API_BASE_URL, formatErrorMessage } from '../../config/api';
 
-const SPECIES_LIST  = ['Tuna (Yellowfin)', 'Skipjack', 'Trevally (Paraw)', 'Mackerel'];
+const BASE_SPECIES_LIST = [
+  'Tuna (Yellowfin)',
+  'Skipjack',
+  'Trevally (Paraw)',
+  'Mackerel',
+  'Seer Fish (Thora)',
+  'Sailfish (Thalapath)',
+  'Barramundi (Modha)',
+  'Red Snapper (Ranna)',
+];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -76,23 +85,32 @@ export const MarketTrends = () => {
     setLoading(true);
     setError(null);
     try {
-      // Fetch price predictions via ASP.NET Core proxy (mandatory backend rule — never call port 8001 directly)
-      const [predictionsRes, dbRes] = await Promise.all([
-        Promise.allSettled(
-          SPECIES_LIST.map(sp =>
-            axios.get<PricePrediction>(
-              `${API_BASE_URL}/api/AgentGateway/prices/${encodeURIComponent(sp)}/predict`,
-              { headers: authHeader }
-            )
+      // 1. Fetch DB market stats to discover any custom species added by fishermen
+      const dbRes = await axios.get<DbStat[]>(`${API_BASE_URL}/api/Catches/market-stats`, { headers: authHeader })
+        .catch(() => ({ data: [] as DbStat[] }));
+      const dbStats: DbStat[] = dbRes.data || [];
+
+      // Combine base species list with all unique species found in DB
+      const speciesSet = new Set<string>(BASE_SPECIES_LIST);
+      dbStats.forEach(d => {
+        if (d.species && d.species.trim()) {
+          const match = Array.from(speciesSet).find(s => s.toLowerCase() === d.species.toLowerCase());
+          if (!match) speciesSet.add(d.species.trim());
+        }
+      });
+      const activeSpeciesList = Array.from(speciesSet);
+
+      // 2. Fetch price predictions via ASP.NET Core proxy
+      const predictionsRes = await Promise.allSettled(
+        activeSpeciesList.map(sp =>
+          axios.get<PricePrediction>(
+            `${API_BASE_URL}/api/AgentGateway/prices/${encodeURIComponent(sp)}/predict`,
+            { headers: authHeader }
           )
-        ),
-        axios.get<DbStat[]>(`${API_BASE_URL}/api/Catches/market-stats`, { headers: authHeader })
-          .catch(() => ({ data: [] as DbStat[] })),
-      ]);
+        )
+      );
 
-      const dbStats: DbStat[] = dbRes.data;
-
-      const combined: CombinedStat[] = SPECIES_LIST.map((sp, i) => {
+      const combined: CombinedStat[] = activeSpeciesList.map((sp, i) => {
         const predResult = predictionsRes[i];
         const pred: PricePrediction | null =
           predResult.status === 'fulfilled' ? predResult.value.data : null;
@@ -109,8 +127,8 @@ export const MarketTrends = () => {
 
         return {
           species:        sp,
-          apiAvg:         pred?.summary.avgLast30       ?? 0,
-          apiTrend:       pred?.summary.trendPct        ?? 0,
+          apiAvg:         pred?.summary?.avgLast30      ?? 0,
+          apiTrend:       pred?.summary?.trendPct       ?? 0,
           apiRecommended: apiRec,
           apiConfidence:  pred?.confidence              ?? 'low',
           apiInsight:     pred?.insight                 ?? 'Price API unavailable.',

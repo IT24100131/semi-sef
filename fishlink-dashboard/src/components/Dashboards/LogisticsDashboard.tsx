@@ -6,6 +6,6 @@ interface LogisticsDashboardProps {
 }
 
 // Logistics Dashboard — shows AdminDashboard's Delivery Plans tab
-export const LogisticsDashboard: React.FC<LogisticsDashboardProps> = () => {
-  return <AdminDashboard defaultTab="logistics" />;
+export const LogisticsDashboard: React.FC<LogisticsDashboardProps> = ({ onNavigateTab }) => {
+  return <AdminDashboard defaultTab="logistics" onTabChange={onNavigateTab} />;
 };

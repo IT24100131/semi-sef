@@ -95,13 +95,33 @@ interface CatchFormProps {
   onSaved: () => void;
 }
 
+const PRESET_SPECIES = [
+  'Tuna (Yellowfin)',
+  'Skipjack',
+  'Trevally (Paraw)',
+  'Mackerel',
+  'Seer Fish (Thora)',
+  'Sailfish (Thalapath)',
+  'Barramundi (Modha)',
+  'Red Snapper (Ranna)',
+  'Cuttlefish / Squid',
+  'Prawns / Shrimp',
+  'Crab',
+];
+
 const CatchForm: React.FC<CatchFormProps> = ({
   editId, initialSpecies, initialQuantity, initialPrice, initialLocation,
   initialVerifiedWeight, initialQualityGrade, initialInspectionResult,
   initialCatchDateTime, initialSellerNote,
   onCancel, onSaved,
 }) => {
-  const [species,          setSpecies]          = useState(initialSpecies);
+  const isInitialCustom = Boolean(initialSpecies && !PRESET_SPECIES.includes(initialSpecies));
+  const [selectedSpeciesOption, setSelectedSpeciesOption] = useState<string>(
+    isInitialCustom ? '__custom__' : (initialSpecies || PRESET_SPECIES[0])
+  );
+  const [customSpeciesName, setCustomSpeciesName] = useState<string>(
+    isInitialCustom ? initialSpecies : ''
+  );
   const [quantity,         setQuantity]         = useState(initialQuantity);
   const [price,            setPrice]            = useState(initialPrice);
   const [location,         setLocation]         = useState<string | null>(initialLocation);
@@ -114,13 +134,28 @@ const CatchForm: React.FC<CatchFormProps> = ({
   const [photoPreview,     setPhotoPreview]     = useState('');
   const [submitted,        setSubmitted]        = useState(false);
   const [error,            setError]            = useState('');
+  const [fieldErrors,      setFieldErrors]      = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const getAuthHeader = () => ({ headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
 
+  const clearFieldError = (field: string) => {
+    if (fieldErrors[field]) {
+      setFieldErrors(prev => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    }
+  };
+
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Photo size exceeds 5MB limit. Please upload a smaller photo.');
+      return;
+    }
     setPhotoPreview(URL.createObjectURL(file));
     const reader = new FileReader();
     reader.onloadend = () => setPhotoBase64(reader.result as string);
@@ -138,12 +173,86 @@ const CatchForm: React.FC<CatchFormProps> = ({
     }
   };
 
+  const validateForm = (): boolean => {
+    const errs: Record<string, string> = {};
+
+    const resolvedSpecies = selectedSpeciesOption === '__custom__'
+      ? customSpeciesName.trim()
+      : selectedSpeciesOption;
+
+    if (!resolvedSpecies) {
+      errs.species = selectedSpeciesOption === '__custom__'
+        ? 'Please enter the custom fish species name.'
+        : 'Please select a fish species.';
+    } else if (resolvedSpecies.length > 80) {
+      errs.species = 'Fish species name cannot exceed 80 characters.';
+    }
+
+    const qtyNum = Number(quantity);
+    if (!quantity || isNaN(qtyNum) || qtyNum <= 0) {
+      errs.quantity = 'Quantity must be a positive number greater than 0 kg.';
+    } else if (qtyNum > 10000) {
+      errs.quantity = 'Quantity cannot exceed 10,000 kg.';
+    }
+
+    const priceNum = Number(price);
+    if (!price || isNaN(priceNum) || priceNum <= 0) {
+      errs.price = 'Asking price must be a positive number greater than 0.';
+    } else if (priceNum < 50) {
+      errs.price = 'Asking price must be at least Rs. 50/kg.';
+    } else if (priceNum > 100000) {
+      errs.price = 'Asking price cannot exceed Rs. 100,000/kg.';
+    }
+
+    if (verifiedWeight) {
+      const vWeightNum = Number(verifiedWeight);
+      if (isNaN(vWeightNum) || vWeightNum <= 0) {
+        errs.verifiedWeight = 'Verified weight must be greater than 0 kg.';
+      } else if (vWeightNum > 10000) {
+        errs.verifiedWeight = 'Verified weight cannot exceed 10,000 kg.';
+      }
+    }
+
+    if (!qualityGrade) {
+      errs.qualityGrade = 'Please select a declared quality grade (A+, A, B, or C).';
+    }
+
+    if (catchDateTime) {
+      const catchDate = new Date(catchDateTime);
+      const now = new Date();
+      if (isNaN(catchDate.getTime())) {
+        errs.catchDateTime = 'Invalid catch date and time.';
+      } else if (catchDate > now) {
+        errs.catchDateTime = 'Catch date & time cannot be in the future.';
+      } else if (now.getTime() - catchDate.getTime() > 30 * 24 * 60 * 60 * 1000) {
+        errs.catchDateTime = 'Catch date cannot be older than 30 days.';
+      }
+    }
+
+    if (sellerNote && sellerNote.length > 500) {
+      errs.sellerNote = 'Seller note cannot exceed 500 characters.';
+    }
+
+    setFieldErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    if (!validateForm()) {
+      setError('Please review and correct the highlighted fields before submitting.');
+      return;
+    }
+
+    const finalSpecies = selectedSpeciesOption === '__custom__'
+      ? customSpeciesName.trim()
+      : selectedSpeciesOption;
+
     try {
       const payload = {
-        fishSpecies:          species,
+        fishSpecies:          finalSpecies,
         quantityKg:           Number(quantity),
         askingPricePerKg:     Number(price),
         location:             location || 'Pending Location',
@@ -166,6 +275,13 @@ const CatchForm: React.FC<CatchFormProps> = ({
     }
   };
 
+  // Real-time weight discrepancy calculation for AI awareness
+  const declaredQty = Number(quantity);
+  const vWeight = Number(verifiedWeight);
+  const weightDiffPct = (declaredQty > 0 && vWeight > 0)
+    ? Math.abs(declaredQty - vWeight) / declaredQty * 100
+    : 0;
+
   if (submitted) {
     return (
       <div className="workflow-card" style={{ textAlign: 'center', padding: '40px', borderLeftColor: '#10b981' }}>
@@ -183,27 +299,113 @@ const CatchForm: React.FC<CatchFormProps> = ({
       {error && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#fee2e2',
           border: '1px solid #fca5a5', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
-          <AlertCircle color="#ef4444" size={18} />
+          <AlertCircle color="#ef4444" size={18} style={{ flexShrink: 0 }} />
           <p style={{ margin: 0, color: '#991b1b', fontSize: '0.9rem' }}>{typeof error === 'string' ? error : formatErrorMessage(error)}</p>
         </div>
       )}
       <form onSubmit={handleSubmit} className="auth-form" style={{ maxWidth: '520px' }}>
         <div className="form-group">
-          <label>Fish Species</label>
-          <select required value={species} onChange={(e) => setSpecies(e.target.value)}>
-            <option value="Tuna (Yellowfin)">Tuna (Yellowfin)</option>
-            <option value="Skipjack">Skipjack</option>
-            <option value="Trevally (Paraw)">Trevally (Paraw)</option>
-            <option value="Mackerel">Mackerel</option>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+            <label style={{ margin: 0 }}>Fish Species <span style={{ color: '#ef4444' }}>*</span></label>
+            {selectedSpeciesOption === '__custom__' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSpeciesOption(PRESET_SPECIES[0]);
+                  clearFieldError('species');
+                }}
+                style={{
+                  background: 'none', border: 'none', color: '#0284c7', fontSize: '0.78rem',
+                  cursor: 'pointer', padding: 0, textDecoration: 'underline'
+                }}
+              >
+                ← Back to standard list
+              </button>
+            )}
+          </div>
+
+          <select
+            required
+            value={selectedSpeciesOption}
+            onChange={(e) => {
+              setSelectedSpeciesOption(e.target.value);
+              clearFieldError('species');
+            }}
+            style={{ borderColor: fieldErrors.species ? '#ef4444' : undefined }}
+          >
+            <optgroup label="Popular Species">
+              {PRESET_SPECIES.map(sp => (
+                <option key={sp} value={sp}>{sp}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Custom Option">
+              <option value="__custom__">✨ + Other (Add custom fish species)...</option>
+            </optgroup>
           </select>
+
+          {selectedSpeciesOption === '__custom__' && (
+            <div style={{ marginTop: '8px' }}>
+              <label style={{ fontSize: '0.78rem', color: '#0369a1', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                Enter Custom Fish Species Name <span style={{ color: '#ef4444' }}>*</span>
+              </label>
+              <input
+                type="text"
+                autoFocus
+                maxLength={80}
+                placeholder="e.g. Thalapath, Seer Fish (Thora), Modha, Lobster..."
+                value={customSpeciesName}
+                onChange={(e) => {
+                  setCustomSpeciesName(e.target.value);
+                  clearFieldError('species');
+                }}
+                style={{ borderColor: fieldErrors.species ? '#ef4444' : undefined }}
+              />
+            </div>
+          )}
+
+          {fieldErrors.species && (
+            <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '3px', display: 'block' }}>
+              {fieldErrors.species}
+            </span>
+          )}
         </div>
         <div className="form-group">
-          <label>Quantity (kg)</label>
-          <input type="number" placeholder="e.g. 150" required value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+          <label>Quantity (kg) <span style={{ color: '#ef4444' }}>*</span></label>
+          <input
+            type="number"
+            min="1"
+            max="10000"
+            step="any"
+            placeholder="e.g. 150"
+            required
+            value={quantity}
+            onChange={(e) => { setQuantity(e.target.value); clearFieldError('quantity'); }}
+            style={{ borderColor: fieldErrors.quantity ? '#ef4444' : undefined }}
+          />
+          {fieldErrors.quantity && (
+            <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '3px', display: 'block' }}>
+              {fieldErrors.quantity}
+            </span>
+          )}
         </div>
         <div className="form-group">
-          <label>Asking Price (Rs/kg)</label>
-          <input type="number" placeholder="e.g. 1400" required value={price} onChange={(e) => setPrice(e.target.value)} />
+          <label>Asking Price (Rs/kg) <span style={{ color: '#ef4444' }}>*</span></label>
+          <input
+            type="number"
+            min="50"
+            max="100000"
+            step="any"
+            placeholder="e.g. 1400"
+            required
+            value={price}
+            onChange={(e) => { setPrice(e.target.value); clearFieldError('price'); }}
+            style={{ borderColor: fieldErrors.price ? '#ef4444' : undefined }}
+          />
+          {fieldErrors.price && (
+            <span style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '3px', display: 'block' }}>
+              {fieldErrors.price}
+            </span>
+          )}
         </div>
 
         {/* ── Quality & Inspection Fields ── */}
@@ -217,22 +419,45 @@ const CatchForm: React.FC<CatchFormProps> = ({
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label>Verified Weight (kg)</label>
-              <input type="number" placeholder="e.g. 98" value={verifiedWeight}
-                onChange={e => setVerifiedWeight(e.target.value)} />
-              <p style={{ margin: '3px 0 0', fontSize: '0.72rem', color: '#64748b' }}>
-                Physical weight at pier
-              </p>
+              <input
+                type="number"
+                min="1"
+                max="10000"
+                step="any"
+                placeholder="e.g. 98"
+                value={verifiedWeight}
+                onChange={e => { setVerifiedWeight(e.target.value); clearFieldError('verifiedWeight'); }}
+                style={{ borderColor: fieldErrors.verifiedWeight ? '#ef4444' : undefined }}
+              />
+              {fieldErrors.verifiedWeight ? (
+                <span style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '3px', display: 'block' }}>
+                  {fieldErrors.verifiedWeight}
+                </span>
+              ) : (
+                <p style={{ margin: '3px 0 0', fontSize: '0.72rem', color: '#64748b' }}>
+                  Physical weight at pier
+                </p>
+              )}
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
-              <label>Declared Quality Grade</label>
-              <select value={qualityGrade} onChange={e => setQualityGrade(e.target.value)}>
+              <label>Declared Quality Grade <span style={{ color: '#ef4444' }}>*</span></label>
+              <select
+                value={qualityGrade}
+                onChange={e => { setQualityGrade(e.target.value); clearFieldError('qualityGrade'); }}
+                style={{ borderColor: fieldErrors.qualityGrade ? '#ef4444' : undefined }}
+              >
                 <option value="">Select grade</option>
                 <option value="A+">A+ (Premium)</option>
                 <option value="A">A (Good)</option>
                 <option value="B">B (Average)</option>
                 <option value="C">C (Below avg)</option>
               </select>
+              {fieldErrors.qualityGrade && (
+                <span style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '3px', display: 'block' }}>
+                  {fieldErrors.qualityGrade}
+                </span>
+              )}
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
@@ -246,15 +471,56 @@ const CatchForm: React.FC<CatchFormProps> = ({
 
             <div className="form-group" style={{ margin: 0 }}>
               <label>Catch Date & Time</label>
-              <input type="datetime-local" value={catchDateTime}
-                onChange={e => setCatchDateTime(e.target.value)} />
+              <input
+                type="datetime-local"
+                max={new Date().toISOString().slice(0, 16)}
+                value={catchDateTime}
+                onChange={e => { setCatchDateTime(e.target.value); clearFieldError('catchDateTime'); }}
+                style={{ borderColor: fieldErrors.catchDateTime ? '#ef4444' : undefined }}
+              />
+              {fieldErrors.catchDateTime && (
+                <span style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '3px', display: 'block' }}>
+                  {fieldErrors.catchDateTime}
+                </span>
+              )}
             </div>
           </div>
 
+          {/* AI Discrepancy Insight Alert */}
+          {weightDiffPct > 15 && (
+            <div style={{
+              marginTop: '12px',
+              padding: '8px 12px',
+              background: '#fef3c7',
+              border: '1px solid #fcd34d',
+              borderRadius: '6px',
+              fontSize: '0.76rem',
+              color: '#92400e',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <span>⚠️</span>
+              <span>
+                <strong>Weight Discrepancy ({weightDiffPct.toFixed(1)}%):</strong> Differences over 15% will be flagged for review by the AI Quality Agent.
+              </span>
+            </div>
+          )}
+
           <div className="form-group" style={{ margin: '12px 0 0' }}>
             <label>Seller Note (optional)</label>
-            <input type="text" placeholder="e.g. Fresh morning catch, iced immediately"
-              value={sellerNote} onChange={e => setSellerNote(e.target.value)} />
+            <input
+              type="text"
+              maxLength={500}
+              placeholder="e.g. Fresh morning catch, iced immediately"
+              value={sellerNote}
+              onChange={e => { setSellerNote(e.target.value); clearFieldError('sellerNote'); }}
+            />
+            {fieldErrors.sellerNote && (
+              <span style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '3px', display: 'block' }}>
+                {fieldErrors.sellerNote}
+              </span>
+            )}
           </div>
         </div>
 
@@ -303,11 +569,19 @@ const CatchForm: React.FC<CatchFormProps> = ({
 
 // ── Catch Bids & Highest Bid Section ──────────────────────────────────────────
 
-const CatchBidsSection: React.FC<{ catchId: number; askingPrice: number; quantityKg: number }> = ({ catchId, askingPrice, quantityKg }) => {
+const CatchBidsSection: React.FC<{
+  catchId: number;
+  askingPrice: number;
+  quantityKg: number;
+  catchStatus?: string;
+  onActionCompleted?: () => void;
+}> = ({ catchId, askingPrice, quantityKg, catchStatus, onActionCompleted }) => {
   const [bids, setBids] = useState<BidRecord[]>([]);
   const [expanded, setExpanded] = useState(false);
+  const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  useEffect(() => {
+  const fetchBids = () => {
     const headers = { Authorization: `Bearer ${localStorage.getItem('token')}` };
     axios.get<BidRecord[]>(`${API_BASE_URL}/api/Bids/catch/${catchId}`, { headers })
       .then(res => {
@@ -316,7 +590,82 @@ const CatchBidsSection: React.FC<{ catchId: number; askingPrice: number; quantit
         }
       })
       .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetchBids();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catchId]);
+
+  const handleAcceptBid = async (bid: BidRecord) => {
+    const totalAmount = Number(bid.bidPricePerKg) * quantityKg;
+    const confirmed = window.confirm(
+      `Accept bid from ${bid.buyer?.fullName || 'Buyer'} for Rs. ${Number(bid.bidPricePerKg).toLocaleString()}/kg?\n\n` +
+      `• Catch Weight: ${quantityKg} kg\n` +
+      `• Total Deal Amount: Rs. ${totalAmount.toLocaleString()}\n\n` +
+      `Accepting will finalize this deal, close bidding, mark other bids as lost, and dispatch the Logistics Agent.`
+    );
+    if (!confirmed) return;
+
+    setActionLoadingId(bid.id);
+    setFeedback(null);
+    try {
+      const headers = { Authorization: `Bearer ${localStorage.getItem('token')}` };
+      await axios.patch(`${API_BASE_URL}/api/Bids/${bid.id}/accept`, {}, { headers });
+      setBids(prev => prev.map(b => b.id === bid.id ? { ...b, status: 'Accepted' } : { ...b, status: 'Lost' }));
+      setFeedback({
+        type: 'success',
+        message: `🎉 Bid from ${bid.buyer?.fullName || 'Buyer'} accepted! Sales order created and catch marked as Sold.`
+      });
+
+      // Notify Buyer and Admin in real time
+      try {
+        const acceptedInfo = {
+          bidId: bid.id,
+          buyerName: bid.buyer?.fullName || 'Buyer',
+          buyerId: bid.buyer?.id || 1,
+          price: Number(bid.bidPricePerKg),
+          time: new Date().toISOString(),
+          quantityKg: quantityKg,
+          species: 'Yellowfin Tuna'
+        };
+        localStorage.setItem('fishlink_latest_accepted_bid', JSON.stringify(acceptedInfo));
+        window.dispatchEvent(new CustomEvent('fishlink:bid_accepted', { detail: acceptedInfo }));
+      } catch {}
+
+      if (onActionCompleted) onActionCompleted();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.response?.data || 'Failed to accept bid. Please try again.';
+      setFeedback({ type: 'error', message: String(msg) });
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleRejectBid = async (bid: BidRecord) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to reject the bid of Rs. ${Number(bid.bidPricePerKg).toLocaleString()}/kg from ${bid.buyer?.fullName || 'Buyer'}?`
+    );
+    if (!confirmed) return;
+
+    setActionLoadingId(bid.id);
+    setFeedback(null);
+    try {
+      const headers = { Authorization: `Bearer ${localStorage.getItem('token')}` };
+      await axios.patch(`${API_BASE_URL}/api/Bids/${bid.id}/reject`, {}, { headers });
+      setBids(prev => prev.map(b => b.id === bid.id ? { ...b, status: 'Rejected' } : b));
+      setFeedback({
+        type: 'success',
+        message: `Bid of Rs. ${Number(bid.bidPricePerKg).toLocaleString()}/kg was rejected.`
+      });
+      if (onActionCompleted) onActionCompleted();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.response?.data || 'Failed to reject bid. Please try again.';
+      setFeedback({ type: 'error', message: String(msg) });
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
 
   if (bids.length === 0) {
     return (
@@ -326,83 +675,226 @@ const CatchBidsSection: React.FC<{ catchId: number; askingPrice: number; quantit
     );
   }
 
-  const highestBid = Math.max(...bids.map(b => b.bidPricePerKg));
-  const highestBidObj = bids.find(b => b.bidPricePerKg === highestBid);
+  const acceptedBid = bids.find(b => b.status === 'Accepted');
+  const activeBids = bids.filter(b => b.status !== 'Rejected' && b.status !== 'Lost');
+  const highestBid = activeBids.length > 0
+    ? Math.max(...activeBids.map(b => Number(b.bidPricePerKg)))
+    : Math.max(...bids.map(b => Number(b.bidPricePerKg)));
+  const highestBidObj = (activeBids.length > 0 ? activeBids : bids).find(b => Number(b.bidPricePerKg) === highestBid);
   const diffFromAsking = askingPrice > 0 ? ((highestBid - askingPrice) / askingPrice * 100).toFixed(1) : '0';
 
+  const isSold = catchStatus === 'Sold' || !!acceptedBid;
+
   return (
-    <div style={{ marginTop: '12px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '10px', padding: '12px 14px' }}>
+    <div style={{
+      marginTop: '12px',
+      background: isSold ? '#f5f3ff' : '#f0fdf4',
+      border: `1px solid ${isSold ? '#c4b5fd' : '#86efac'}`,
+      borderRadius: '10px',
+      padding: '12px 14px'
+    }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.98rem', fontWeight: 800, color: '#15803d' }}>
-              🏆 Current Highest Bid: Rs. {highestBid.toLocaleString()}/kg
-            </span>
-            <span style={{
-              padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 700,
-              background: Number(diffFromAsking) >= 0 ? '#dcfce7' : '#fee2e2',
-              color: Number(diffFromAsking) >= 0 ? '#166534' : '#991b1b'
-            }}>
-              {Number(diffFromAsking) >= 0 ? `+${diffFromAsking}%` : `${diffFromAsking}%`} vs asking
-            </span>
-          </div>
-          <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: '#166534' }}>
-            Placed by <strong>{highestBidObj?.buyer?.fullName ?? 'Verified Buyer'}</strong> · Total value: <strong>Rs. {(highestBid * quantityKg).toLocaleString()}</strong>
-          </p>
+          {acceptedBid ? (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.98rem', fontWeight: 800, color: '#6d28d9' }}>
+                  🏆 Accepted Winning Bid: Rs. {Number(acceptedBid.bidPricePerKg).toLocaleString()}/kg
+                </span>
+                <span style={{
+                  padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 700,
+                  background: '#ede9fe', color: '#6d28d9', border: '1px solid #c4b5fd'
+                }}>
+                  ✅ DEAL CLOSED
+                </span>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: '#5b21b6' }}>
+                Winner: <strong>{acceptedBid.buyer?.fullName ?? 'Buyer'}</strong> · Total Value: <strong>Rs. {(Number(acceptedBid.bidPricePerKg) * quantityKg).toLocaleString()}</strong>
+              </p>
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.98rem', fontWeight: 800, color: '#15803d' }}>
+                  🏆 Current Highest Bid: Rs. {highestBid.toLocaleString()}/kg
+                </span>
+                <span style={{
+                  padding: '2px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 700,
+                  background: Number(diffFromAsking) >= 0 ? '#dcfce7' : '#fee2e2',
+                  color: Number(diffFromAsking) >= 0 ? '#166534' : '#991b1b'
+                }}>
+                  {Number(diffFromAsking) >= 0 ? `+${diffFromAsking}%` : `${diffFromAsking}%`} vs asking
+                </span>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: '#166534' }}>
+                Placed by <strong>{highestBidObj?.buyer?.fullName ?? 'Verified Buyer'}</strong> · Total value: <strong>Rs. {(highestBid * quantityKg).toLocaleString()}</strong>
+              </p>
+            </div>
+          )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          style={{
-            background: '#ffffff', border: '1px solid #10b981', color: '#047857',
-            borderRadius: '6px', padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600,
-            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px'
-          }}
-        >
-          {expanded ? '▲ Hide Bids' : `▼ View Bids (${bids.length})`}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {/* Quick-action top accept button if highest bid is pending and not yet sold */}
+          {!isSold && highestBidObj && (highestBidObj.status === 'Pending' || !highestBidObj.status) && (
+            <button
+              type="button"
+              onClick={() => handleAcceptBid(highestBidObj)}
+              disabled={actionLoadingId !== null}
+              style={{
+                background: '#16a34a', color: '#ffffff', border: 'none',
+                borderRadius: '6px', padding: '6px 14px', fontSize: '0.82rem', fontWeight: 700,
+                cursor: actionLoadingId !== null ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: '6px',
+                boxShadow: '0 2px 5px rgba(22,163,74,0.3)',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              {actionLoadingId === highestBidObj.id ? '⏳ Accepting...' : `✓ Accept Top Bid (Rs. ${highestBid.toLocaleString()}/kg)`}
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            style={{
+              background: '#ffffff',
+              border: `1px solid ${isSold ? '#8b5cf6' : '#10b981'}`,
+              color: isSold ? '#6d28d9' : '#047857',
+              borderRadius: '6px', padding: '6px 12px', fontSize: '0.8rem', fontWeight: 600,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px'
+            }}
+          >
+            {expanded ? '▲ Hide Bids' : `▼ View All Bids (${bids.length})`}
+          </button>
+        </div>
       </div>
 
+      {feedback && (
+        <div style={{
+          marginTop: '10px',
+          padding: '8px 12px',
+          borderRadius: '6px',
+          fontSize: '0.82rem',
+          fontWeight: 600,
+          background: feedback.type === 'success' ? '#dcfce7' : '#fee2e2',
+          color: feedback.type === 'success' ? '#15803d' : '#b91c1c',
+          border: `1px solid ${feedback.type === 'success' ? '#86efac' : '#fca5a5'}`
+        }}>
+          {feedback.message}
+        </div>
+      )}
+
       {expanded && (
-        <div style={{ marginTop: '12px', borderTop: '1px solid #bbf7d0', paddingTop: '10px' }}>
-          <p style={{ margin: '0 0 8px', fontSize: '0.75rem', fontWeight: 700, color: '#166534', textTransform: 'uppercase' }}>
-            Live Buyer Bids ({bids.length}):
+        <div style={{ marginTop: '12px', borderTop: `1px solid ${isSold ? '#ddd6fe' : '#bbf7d0'}`, paddingTop: '10px' }}>
+          <p style={{ margin: '0 0 8px', fontSize: '0.75rem', fontWeight: 700, color: isSold ? '#6d28d9' : '#166534', textTransform: 'uppercase' }}>
+            Buyer Bids Overview ({bids.length}):
           </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {bids.slice().sort((a, b) => b.bidPricePerKg - a.bidPricePerKg).map((b, idx) => (
-              <div
-                key={b.id}
-                style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  background: idx === 0 ? '#dcfce7' : '#ffffff',
-                  border: `1px solid ${idx === 0 ? '#86efac' : '#e2e8f0'}`,
-                  borderRadius: '6px', padding: '8px 12px', fontSize: '0.82rem'
-                }}
-              >
-                <div>
-                  <span style={{ fontWeight: 700, color: '#1e293b' }}>
-                    {idx === 0 && '🥇 '}{b.buyer?.fullName || `Buyer #${b.id}`}
-                  </span>
-                  {b.buyer?.email && (
-                    <span style={{ color: '#64748b', fontSize: '0.75rem', marginLeft: '6px' }}>
-                      ({b.buyer.email})
-                    </span>
-                  )}
-                  <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                    {new Date(b.bidTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({new Date(b.bidTime).toLocaleDateString()})
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {bids.slice().sort((a, b) => Number(b.bidPricePerKg) - Number(a.bidPricePerKg)).map((b, idx) => {
+              const isBidAccepted = b.status === 'Accepted';
+              const isBidRejected = b.status === 'Rejected';
+              const isBidLost     = b.status === 'Lost';
+              const isBidPending  = !b.status || b.status === 'Pending';
+              const canAct        = isBidPending && !isSold;
+
+              return (
+                <div
+                  key={b.id}
+                  style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px',
+                    background: isBidAccepted ? '#f0fdf4' : isBidRejected ? '#fef2f2' : idx === 0 && !isSold ? '#f0fdf4' : '#ffffff',
+                    border: `1px solid ${isBidAccepted ? '#86efac' : isBidRejected ? '#fca5a5' : idx === 0 && !isSold ? '#86efac' : '#e2e8f0'}`,
+                    borderRadius: '8px', padding: '10px 14px', fontSize: '0.82rem'
+                  }}
+                >
+                  <div style={{ flex: '1 1 200px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, color: '#1e293b' }}>
+                        {idx === 0 && '🥇 '}{idx === 1 && '🥈 '}{idx === 2 && '🥉 '}
+                        {b.buyer?.fullName || `Buyer #${b.id}`}
+                      </span>
+                      {b.buyer?.email && (
+                        <span style={{ color: '#64748b', fontSize: '0.75rem' }}>
+                          ({b.buyer.email})
+                        </span>
+                      )}
+                      {/* Status Badges */}
+                      {isBidAccepted && (
+                        <span style={{ background: '#dcfce7', color: '#15803d', padding: '2px 8px', borderRadius: '12px', fontSize: '0.72rem', fontWeight: 700 }}>
+                          ✅ Accepted Winner
+                        </span>
+                      )}
+                      {isBidRejected && (
+                        <span style={{ background: '#fee2e2', color: '#b91c1c', padding: '2px 8px', borderRadius: '12px', fontSize: '0.72rem', fontWeight: 700 }}>
+                          ❌ Rejected
+                        </span>
+                      )}
+                      {isBidLost && (
+                        <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 8px', borderRadius: '12px', fontSize: '0.72rem', fontWeight: 600 }}>
+                          Outbid / Lost
+                        </span>
+                      )}
+                      {isBidPending && (
+                        <span style={{ background: '#fef3c7', color: '#b45309', padding: '2px 8px', borderRadius: '12px', fontSize: '0.72rem', fontWeight: 700 }}>
+                          ⏳ Pending Decision
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '3px' }}>
+                      Bid placed: {new Date(b.bidTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({new Date(b.bidTime).toLocaleDateString()})
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 800, color: '#0f766e', fontSize: '0.95rem' }}>
+                        Rs. {Number(b.bidPricePerKg).toLocaleString()}/kg
+                      </div>
+                      <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                        Total: Rs. {(Number(b.bidPricePerKg) * quantityKg).toLocaleString()}
+                      </div>
+                    </div>
+
+                    {/* Action buttons for Fisherman */}
+                    {canAct && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleAcceptBid(b)}
+                          disabled={actionLoadingId !== null}
+                          title="Accept this bid and finalize the deal"
+                          style={{
+                            background: '#16a34a', color: '#ffffff', border: 'none',
+                            borderRadius: '6px', padding: '6px 12px', fontSize: '0.78rem', fontWeight: 700,
+                            cursor: actionLoadingId !== null ? 'not-allowed' : 'pointer',
+                            display: 'inline-flex', alignItems: 'center', gap: '4px',
+                            boxShadow: '0 1px 3px rgba(22,163,74,0.3)',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          {actionLoadingId === b.id ? '⏳' : '✓ Accept'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRejectBid(b)}
+                          disabled={actionLoadingId !== null}
+                          title="Reject this bid"
+                          style={{
+                            background: '#ffffff', color: '#dc2626', border: '1px solid #fca5a5',
+                            borderRadius: '6px', padding: '6px 10px', fontSize: '0.78rem', fontWeight: 600,
+                            cursor: actionLoadingId !== null ? 'not-allowed' : 'pointer',
+                            display: 'inline-flex', alignItems: 'center', gap: '4px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          ✕ Reject
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 800, color: '#0f766e', fontSize: '0.9rem' }}>
-                    Rs. {Number(b.bidPricePerKg).toLocaleString()}/kg
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                    Total: Rs. {(Number(b.bidPricePerKg) * quantityKg).toLocaleString()}
-                  </div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -951,7 +1443,11 @@ export const FishermanDashboard = () => {
 
   // ── Stats ──────────────────────────────────────────────────────────────────
   const totalRevenue   = catches.filter(c => c.status === 'Sold')
-    .reduce((acc, c) => acc + Number(c.quantityKg) * Number(c.askingPricePerKg), 0);
+    .reduce((acc, c) => {
+      const acceptedBid = allBidsMap[c.id]?.find(b => b.status === 'Accepted');
+      const rate = acceptedBid ? Number(acceptedBid.bidPricePerKg) : Number(c.askingPricePerKg);
+      return acc + Number(c.quantityKg) * rate;
+    }, 0);
   const activeCatches  = catches.filter(c => ['Published', 'Bidding'].includes(c.status));
   const activeCount    = activeCatches.length;
   const biddingCatches = catches.filter(c => c.status === 'Bidding');
@@ -1276,41 +1772,47 @@ export const FishermanDashboard = () => {
                   </div>
                 )}
 
-                {/* Live Bids Breakdown — only show for Bidding status */}
-                {c.status === 'Bidding' && (
+                {/* Live Bids Breakdown / Accepted Bid History */}
+                {(c.status === 'Bidding' || c.status === 'Sold') && (
                   <CatchBidsSection
                     catchId={c.id}
                     askingPrice={Number(c.askingPricePerKg)}
                     quantityKg={Number(c.quantityKg)}
+                    catchStatus={c.status}
+                    onActionCompleted={fetchCatches}
                   />
                 )}
 
                 {/* Sold Revenue Breakdown — only show for Sold status */}
-                {c.status === 'Sold' && (
-                  <div style={{
-                    marginTop: '12px', background: '#faf5ff', border: '1px solid #d8b4fe',
-                    borderRadius: '10px', padding: '12px 14px', display: 'flex',
-                    justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px'
-                  }}>
-                    <div>
-                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#6b21a8', textTransform: 'uppercase' }}>
-                        🎉 Completed Deal · Verified Sale
-                      </span>
-                      <p style={{ margin: '4px 0 0', fontSize: '1.05rem', fontWeight: 800, color: '#581c87' }}>
-                        Total Revenue Earned: Rs. {(Number(c.quantityKg) * Number(c.askingPricePerKg)).toLocaleString()}
-                      </p>
-                      <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: '#7e22ce' }}>
-                        Sold: <strong>{c.quantityKg} kg</strong> @ <strong>Rs. {Number(c.askingPricePerKg).toLocaleString()}/kg</strong>
-                      </p>
-                    </div>
-                    <span style={{
-                      padding: '4px 12px', borderRadius: '16px', fontSize: '0.78rem', fontWeight: 700,
-                      background: '#ede9fe', color: '#6b21a8', border: '1px solid #c084fc'
+                {c.status === 'Sold' && (() => {
+                  const accepted = allBidsMap[c.id]?.find(b => b.status === 'Accepted');
+                  const soldPrice = accepted ? Number(accepted.bidPricePerKg) : Number(c.askingPricePerKg);
+                  return (
+                    <div style={{
+                      marginTop: '12px', background: '#faf5ff', border: '1px solid #d8b4fe',
+                      borderRadius: '10px', padding: '12px 14px', display: 'flex',
+                      justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px'
                     }}>
-                      ✓ Payment Processed & Delivered
-                    </span>
-                  </div>
-                )}
+                      <div>
+                        <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#6b21a8', textTransform: 'uppercase' }}>
+                          🎉 Completed Deal · Verified Sale
+                        </span>
+                        <p style={{ margin: '4px 0 0', fontSize: '1.05rem', fontWeight: 800, color: '#581c87' }}>
+                          Total Revenue Earned: Rs. {(Number(c.quantityKg) * soldPrice).toLocaleString()}
+                        </p>
+                        <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: '#7e22ce' }}>
+                          Sold: <strong>{c.quantityKg} kg</strong> @ <strong>Rs. {soldPrice.toLocaleString()}/kg</strong>
+                        </p>
+                      </div>
+                      <span style={{
+                        padding: '4px 12px', borderRadius: '16px', fontSize: '0.78rem', fontWeight: 700,
+                        background: '#ede9fe', color: '#6b21a8', border: '1px solid #c084fc'
+                      }}>
+                        ✓ Payment Processed & Delivered
+                      </span>
+                    </div>
+                  );
+                })()}
 
                 {/* Locked notice */}
                 {isLocked && c.status !== 'Cancelled' && c.status !== 'Expired' && (

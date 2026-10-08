@@ -31,3 +31,15 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+~$*
+
+# Logs & Databases
+**/logs/
+*.log
+*.db
+*.sqlite
+
+# Environment Files
+.env
+.env.*
+!.env.example

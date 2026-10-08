@@ -32,7 +32,7 @@ public class BidsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Buyer")]
+    [Authorize(Roles = "Buyer,Fisherman,Admin")]
     public async Task<IActionResult> PlaceBid([FromBody] Bid newBid)
     {
         var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value!);
@@ -42,6 +42,15 @@ public class BidsController : ControllerBase
 
         var fishCatch = await _context.Catches.FindAsync(newBid.CatchId);
         if (fishCatch == null) return NotFound("Catch not found");
+
+        if (newBid.BidPricePerKg <= 0)
+            return BadRequest("Bid price must be greater than Rs. 0/kg.");
+
+        // Enforce: Only one bid per buyer per catch
+        var existingBid = await _context.Bids
+            .FirstOrDefaultAsync(b => b.CatchId == newBid.CatchId && b.BuyerId == userId && b.Status != "Cancelled");
+        if (existingBid != null)
+            return BadRequest($"You have already placed a bid of Rs. {existingBid.BidPricePerKg:0.00}/kg on this catch. Each buyer can only place one bid.");
 
         _context.Bids.Add(newBid);
         await _context.SaveChangesAsync();
@@ -108,12 +117,117 @@ public class BidsController : ControllerBase
         return Ok(bids);
     }
 
+    // ── GET /api/Bids/my-orders ────────────────────────────────────────────────
+    [HttpGet("my-orders")]
+    public async Task<IActionResult> GetMyOrders()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (userIdClaim == null) return Unauthorized();
+        var userId = int.Parse(userIdClaim);
+
+        // Ensure any accepted bids without an order record have one created
+        var acceptedBids = await _context.Bids
+            .Include(b => b.Catch)
+            .Where(b => b.BuyerId == userId && b.Status == "Accepted")
+            .ToListAsync();
+
+        foreach (var b in acceptedBids)
+        {
+            var exists = await _context.Orders.AnyAsync(o => o.BidId == b.Id);
+            if (!exists)
+            {
+                var total = b.BidPricePerKg * (b.Catch?.QuantityKg ?? 1);
+                _context.Orders.Add(new Order
+                {
+                    BidId = b.Id,
+                    TotalAmount = total,
+                    Status = "Created",
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+        }
+        await _context.SaveChangesAsync();
+
+        var orders = await _context.Orders
+            .Include(o => o.Bid)
+                .ThenInclude(b => b!.Catch)
+            .Where(o => o.Bid != null && o.Bid.BuyerId == userId)
+            .OrderByDescending(o => o.CreatedAt)
+            .ToListAsync();
+
+        var catchIds = orders.Select(o => o.Bid?.CatchId ?? 0).Where(id => id > 0).Distinct().ToList();
+        var plans = await _context.DeliveryPlans
+            .Where(p => catchIds.Contains(p.CatchId))
+            .ToListAsync();
+
+        var result = orders.Select(o =>
+        {
+            var plan = plans.FirstOrDefault(p => p.CatchId == o.Bid?.CatchId || p.BidId == o.BidId);
+            var fishCatch = o.Bid?.Catch;
+            var totalKg = fishCatch?.QuantityKg ?? 1;
+            var pricePerKg = o.Bid?.BidPricePerKg ?? 0;
+
+            return new
+            {
+                orderId = o.Id,
+                orderCode = $"ORD-{o.Id:D5}",
+                bidId = o.BidId,
+                catchId = o.Bid?.CatchId,
+                fishSpecies = fishCatch?.FishSpecies ?? "Fish",
+                quantityKg = totalKg,
+                bidPricePerKg = pricePerKg,
+                totalAmount = o.TotalAmount > 0 ? o.TotalAmount : (pricePerKg * totalKg),
+                status = o.Status,
+                createdAt = o.CreatedAt,
+                pickupLocation = fishCatch?.Location ?? "Harbor",
+                photoUrl = fishCatch?.PhotoUrl,
+                qualityGrade = fishCatch != null ? (fishCatch.QualityScore >= 85 ? "A" : fishCatch.QualityScore >= 70 ? "B" : "C") : "A",
+                delivery = plan != null ? new
+                {
+                    planId = plan.PlanId,
+                    vehicle = plan.VehicleCode,
+                    driver = plan.DriverCode,
+                    storage = plan.ColdStorageCode,
+                    route = plan.SelectedRoute,
+                    distanceKm = plan.DistanceKm,
+                    estimatedMinutes = plan.EstimatedMinutes,
+                    status = plan.Status,
+                    pickupLocation = plan.PickupLocation,
+                    deliveryLocation = plan.DeliveryLocation,
+                    eta = plan.EstimatedETA,
+                    pickupTime = plan.PickupTime,
+                    reasoning = plan.AgentReasoning
+                } : null
+            };
+        });
+
+        return Ok(result);
+    }
+
     [HttpPatch("{id}/accept")]
-    [Authorize(Roles = "Fisherman,Admin")]
+    [Authorize(Roles = "Fisherman,Admin,Buyer")]
     public async Task<IActionResult> AcceptBid(int id)
     {
         var bid = await _context.Bids.Include(b => b.Catch).FirstOrDefaultAsync(b => b.Id == id);
         if (bid == null) return NotFound("Bid not found");
+
+        var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+        var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var isDev = string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase);
+        if (!isDev && userRole != "Admin" && userIdStr != null && bid.Catch != null && bid.Catch.FishermanId != int.Parse(userIdStr))
+        {
+            return Forbid();
+        }
+
+        if (bid.Catch != null && bid.Catch.Status == "Sold")
+        {
+            return BadRequest("This catch has already been sold.");
+        }
+
+        if (bid.Status == "Accepted")
+        {
+            return BadRequest("This bid has already been accepted.");
+        }
 
         bid.Status = "Accepted";
 
@@ -155,14 +269,22 @@ public class BidsController : ControllerBase
                 await _context.SaveChangesAsync();
             }
 
-            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var buyer = await _context.Users.FindAsync(bid.BuyerId);
+            var buyerName = buyer?.FullName ?? "Valued Buyer";
+            var deliveryLocation = "Colombo Central Fish Market";
+
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             await http.PostAsJsonAsync("http://localhost:8000/api/logistics/plan", new
             {
-                order_id = order.Id,
+                workflow_id = workflow?.WorkflowId ?? $"WF-LOG-{bid.CatchId}",
                 catch_id = bid.CatchId,
+                order_id = order.Id,
                 buyer_id = bid.BuyerId,
-                pickup_location = bid.Catch?.Location ?? "Negombo",
-                weight_kg = (double)(bid.Catch?.QuantityKg ?? 100),
+                buyer_name = buyerName,
+                fish_species = bid.Catch?.FishSpecies ?? "Fish",
+                quantity_kg = (double)(bid.Catch?.QuantityKg ?? 100),
+                pickup_location = !string.IsNullOrEmpty(bid.Catch?.Location) ? bid.Catch.Location : "Negombo Pier",
+                delivery_location = deliveryLocation,
             });
         }
         catch { /* logistics agent trigger non-blocking */ }
@@ -178,11 +300,24 @@ public class BidsController : ControllerBase
     }
 
     [HttpPatch("{id}/reject")]
-    [Authorize(Roles = "Fisherman,Admin")]
+    [Authorize(Roles = "Fisherman,Admin,Buyer")]
     public async Task<IActionResult> RejectBid(int id)
     {
-        var bid = await _context.Bids.FindAsync(id);
+        var bid = await _context.Bids.Include(b => b.Catch).FirstOrDefaultAsync(b => b.Id == id);
         if (bid == null) return NotFound("Bid not found");
+
+        var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+        var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var isDev = string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase);
+        if (!isDev && userRole != "Admin" && userIdStr != null && bid.Catch != null && bid.Catch.FishermanId != int.Parse(userIdStr))
+        {
+            return Forbid();
+        }
+
+        if (bid.Status == "Accepted")
+        {
+            return BadRequest("Cannot reject an already accepted bid.");
+        }
 
         bid.Status = "Rejected";
         await _context.SaveChangesAsync();

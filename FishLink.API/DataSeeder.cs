@@ -14,6 +14,24 @@ public static class DataSeeder
     {
         Console.WriteLine("🌱 Starting seed...");
 
+        // ── 0. Seed default demo users if missing ─────────────────────────────
+        if (!await db.Users.AnyAsync())
+        {
+            Console.WriteLine("Creating default demo users...");
+            var defaultPassword = BCrypt.Net.BCrypt.HashPassword("Password123!");
+            var seedUsers = new List<User>
+            {
+                new() { FullName = "System Administrator", Email = "admin@fishlink.com", Role = "Admin", PasswordHash = defaultPassword },
+                new() { FullName = "Sunil Perera", Email = "fisherman@fishlink.com", Role = "Fisherman", PasswordHash = defaultPassword },
+                new() { FullName = "Kamal Silva", Email = "buyer@fishlink.com", Role = "Buyer", PasswordHash = defaultPassword },
+                new() { FullName = "Nimal Fernando", Email = "buyer2@fishlink.com", Role = "Buyer", PasswordHash = defaultPassword },
+                new() { FullName = "Kasun Logistics", Email = "logistics@fishlink.com", Role = "Logistics", PasswordHash = defaultPassword }
+            };
+            db.Users.AddRange(seedUsers);
+            await db.SaveChangesAsync();
+            Console.WriteLine("✅ Default demo users created (admin, fisherman, buyers, logistics). Password: Password123!");
+        }
+
         // ── 1. Get buyer IDs ─────────────────────────────────────────────────
         var buyers = await db.Users
             .Where(u => u.Role == "Buyer")
@@ -22,7 +40,7 @@ public static class DataSeeder
 
         if (buyers.Count == 0)
         {
-            Console.WriteLine("❌ No buyers found. Register buyers first.");
+            Console.WriteLine("❌ No buyers found.");
             return;
         }
 
@@ -64,18 +82,19 @@ public static class DataSeeder
         // ── 3. Seed BuyerPreferences ──────────────────────────────────────────
 
         // Realistic preferences per buyer
+        var getBuyerId = (int index) => buyers[Math.Min(index, buyers.Count - 1)].Id;
         var prefData = new[]
         {
             // Samantha — Colombo wholesale buyer, wants quality Tuna
-            new { BuyerId=buyers[0].Id, Species="Tuna (Yellowfin)", MinQty=100m, MaxQty=300m, MaxPrice=2600m, City="Colombo",  Notes="Fresh only, quality A or above" },
+            new { BuyerId=getBuyerId(0), Species="Tuna (Yellowfin)", MinQty=100m, MaxQty=300m, MaxPrice=2600m, City="Colombo",  Notes="Fresh only, quality A or above" },
             // Rohan — Negombo local market, Skipjack specialist
-            new { BuyerId=buyers[1].Id, Species="Skipjack",         MinQty=50m,  MaxQty=200m, MaxPrice=900m,  City="Negombo", Notes="Regular weekly buyer" },
+            new { BuyerId=getBuyerId(1), Species="Skipjack",         MinQty=50m,  MaxQty=200m, MaxPrice=900m,  City="Negombo", Notes="Regular weekly buyer" },
             // Nimal — Negombo restaurant supplier, multiple species
-            new { BuyerId=buyers[2].Id, Species="Trevally (Paraw)", MinQty=100m, MaxQty=500m, MaxPrice=1400m, City="Negombo", Notes="Prefers Negombo pier catches" },
+            new { BuyerId=getBuyerId(2), Species="Trevally (Paraw)", MinQty=100m, MaxQty=500m, MaxPrice=1400m, City="Negombo", Notes="Prefers Negombo pier catches" },
             // Priya — Colombo exporter, large quantities of Tuna
-            new { BuyerId=buyers[3].Id, Species="Tuna (Yellowfin)", MinQty=200m, MaxQty=600m, MaxPrice=2800m, City="Colombo", Notes="Export grade only" },
+            new { BuyerId=getBuyerId(3), Species="Tuna (Yellowfin)", MinQty=200m, MaxQty=600m, MaxPrice=2800m, City="Colombo", Notes="Export grade only" },
             // Kasun — Kandy distributor, budget Mackerel buyer
-            new { BuyerId=buyers[4].Id, Species="Mackerel",         MinQty=50m,  MaxQty=150m, MaxPrice=700m,  City="Kandy",  Notes="Local distribution" },
+            new { BuyerId=getBuyerId(4), Species="Mackerel",         MinQty=50m,  MaxQty=150m, MaxPrice=700m,  City="Kandy",  Notes="Local distribution" },
         };
 
         foreach (var p in prefData)
@@ -115,39 +134,39 @@ public static class DataSeeder
         // Samantha — Tuna buyer, multiple bids
         if (tunaCatches.Count >= 2)
         {
-            bidSeeds.Add((buyers[0].Id, tunaCatches[0], 2150m, "Accepted", 24));
-            bidSeeds.Add((buyers[0].Id, tunaCatches[1], 2300m, "Accepted", 17));
+            bidSeeds.Add((getBuyerId(0), tunaCatches[0], 2150m, "Accepted", 24));
+            bidSeeds.Add((getBuyerId(0), tunaCatches[1], 2300m, "Accepted", 17));
             if (tunaCatches.Count >= 3)
-                bidSeeds.Add((buyers[0].Id, tunaCatches[2], 2050m, "Pending", 1));
+                bidSeeds.Add((getBuyerId(0), tunaCatches[2], 2050m, "Pending", 1));
         }
 
         // Rohan — Skipjack buyer
         if (skipjackCatches.Count >= 1)
         {
-            bidSeeds.Add((buyers[1].Id, skipjackCatches[0], 720m, "Accepted", 19));
+            bidSeeds.Add((getBuyerId(1), skipjackCatches[0], 720m, "Accepted", 19));
             if (skipjackCatches.Count >= 2)
-                bidSeeds.Add((buyers[1].Id, skipjackCatches[1], 800m, "Pending", 1));
+                bidSeeds.Add((getBuyerId(1), skipjackCatches[1], 800m, "Pending", 1));
         }
 
         // Nimal — Trevally buyer
         if (trevallyCatches.Count >= 2)
         {
-            bidSeeds.Add((buyers[2].Id, trevallyCatches[0], 1080m, "Accepted", 14));
-            bidSeeds.Add((buyers[2].Id, trevallyCatches[1], 1200m, "Pending", 1));
+            bidSeeds.Add((getBuyerId(2), trevallyCatches[0], 1080m, "Accepted", 14));
+            bidSeeds.Add((getBuyerId(2), trevallyCatches[1], 1200m, "Pending", 1));
         }
 
         // Priya — Large Tuna bids
         if (tunaCatches.Count >= 2)
         {
-            bidSeeds.Add((buyers[3].Id, tunaCatches[0], 2180m, "Accepted", 24));
-            bidSeeds.Add((buyers[3].Id, tunaCatches[1], 2320m, "Accepted", 17));
+            bidSeeds.Add((getBuyerId(3), tunaCatches[0], 2180m, "Accepted", 24));
+            bidSeeds.Add((getBuyerId(3), tunaCatches[1], 2320m, "Accepted", 17));
         }
 
         // Kasun — Mackerel bids
         if (mackerelCatches.Count >= 2)
         {
-            bidSeeds.Add((buyers[4].Id, mackerelCatches[0], 560m, "Accepted", 21));
-            bidSeeds.Add((buyers[4].Id, mackerelCatches[1], 630m, "Pending",  1));
+            bidSeeds.Add((getBuyerId(4), mackerelCatches[0], 560m, "Accepted", 21));
+            bidSeeds.Add((getBuyerId(4), mackerelCatches[1], 630m, "Pending",  1));
         }
 
         int bidsAdded = 0;

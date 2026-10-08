@@ -17,10 +17,10 @@ public interface ICatchService
 
     // Commands
     Task<Catch>  CreateAsync(CatchRequest request, int fishermanId);
-    Task<bool>   UpdateAsync(int id, CatchRequest request, int fishermanId);
-    Task<bool>   PublishAsync(int id, int fishermanId);
-    Task<bool>   CancelAsync(int id, int fishermanId);
-    Task<bool>   DeleteAsync(int id, int fishermanId);
+    Task<bool>   UpdateAsync(int id, CatchRequest request, int fishermanId, bool isAdmin = false);
+    Task<bool>   PublishAsync(int id, int fishermanId, bool isAdmin = false);
+    Task<bool>   CancelAsync(int id, int fishermanId, bool isAdmin = false);
+    Task<bool>   DeleteAsync(int id, int fishermanId, bool isAdmin = false);
     Task<bool>   ReceiveValidationResultAsync(ValidationResultRequest result);
     Task<bool>   AdminApproveAsync(int id);
     Task<bool>   AdminRejectAsync(int id);

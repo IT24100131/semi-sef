@@ -7,8 +7,8 @@ class ApiConfig {
   static const _storage = FlutterSecureStorage();
   static const String _storageKey = 'custom_api_url';
 
-  // Default PC Wi-Fi IP for physical device connection
-  static const String defaultHost = '192.168.43.174:5157';
+  // Android Emulator host PC IP: 10.0.2.2:5157 (Physical device uses PC LAN IP)
+  static const String defaultHost = '10.0.2.2:5157';
 
   static String _customUrl = '';
 

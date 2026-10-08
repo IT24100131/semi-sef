@@ -11,6 +11,7 @@ namespace FishLink.API.Controllers;
 
 public class BuyerPreferenceRequest
 {
+    public int?    Id               { get; set; }
     public string  PreferredSpecies { get; set; } = string.Empty;
     public decimal MinQuantityKg    { get; set; } = 0;
     public decimal MaxQuantityKg    { get; set; } = 99999;
@@ -52,8 +53,27 @@ public class BuyerMatchController : ControllerBase
 
     // ── Buyer Preference CRUD ─────────────────────────────────────────────────
 
+    // ── Buyer Preference CRUD ─────────────────────────────────────────────────
+    
+    /// GET /api/BuyerMatch/preferences
+    /// Returns current buyer's list of all saved preferences.
+    [HttpGet("preferences")]
+    [Authorize]
+    public async Task<IActionResult> GetMyPreferencesList()
+    {
+        var idClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(idClaim) || !int.TryParse(idClaim, out var buyerId))
+            return Unauthorized("User ID not found in token.");
+
+        var list = await _context.BuyerPreferences
+            .Where(p => p.BuyerId == buyerId)
+            .OrderByDescending(p => p.UpdatedAt)
+            .ToListAsync();
+        return Ok(list);
+    }
+
     /// GET /api/BuyerMatch/preferences/me
-    /// Returns current buyer's saved preference.
+    /// Returns current buyer's most recent saved preference.
     [HttpGet("preferences/me")]
     [Authorize]
     public async Task<IActionResult> GetMyPreference()
@@ -62,13 +82,18 @@ public class BuyerMatchController : ControllerBase
         if (string.IsNullOrEmpty(idClaim) || !int.TryParse(idClaim, out var buyerId))
             return Unauthorized("User ID not found in token.");
 
-        var pref = await _context.BuyerPreferences.FirstOrDefaultAsync(p => p.BuyerId == buyerId);
+        var pref = await _context.BuyerPreferences
+            .Where(p => p.BuyerId == buyerId)
+            .OrderByDescending(p => p.UpdatedAt)
+            .FirstOrDefaultAsync();
         if (pref == null) return NotFound("No preference saved yet.");
         return Ok(pref);
     }
 
+    /// POST /api/BuyerMatch/preferences
     /// POST /api/BuyerMatch/preferences/me
-    /// Create or update current buyer's preference.
+    /// Create new or update an existing preference in the buyer's list.
+    [HttpPost("preferences")]
     [HttpPost("preferences/me")]
     [Authorize]
     public async Task<IActionResult> SaveMyPreference([FromBody] BuyerPreferenceRequest req)
@@ -77,7 +102,27 @@ public class BuyerMatchController : ControllerBase
         if (string.IsNullOrEmpty(idClaim) || !int.TryParse(idClaim, out var buyerId))
             return Unauthorized("User ID not found in token.");
 
-        var pref = await _context.BuyerPreferences.FirstOrDefaultAsync(p => p.BuyerId == buyerId);
+        if (req.MinQuantityKg < 0)
+            return BadRequest("Minimum quantity cannot be negative.");
+        if (req.MaxQuantityKg <= 0)
+            return BadRequest("Maximum quantity must be greater than 0 kg.");
+        if (req.MinQuantityKg > req.MaxQuantityKg)
+            return BadRequest("Minimum quantity cannot be greater than maximum quantity.");
+        if (req.MaxPricePerKg <= 0)
+            return BadRequest("Maximum price must be greater than Rs. 0/kg.");
+        if (req.MaxPricePerKg > 100000)
+            return BadRequest("Maximum price cannot exceed Rs. 100,000/kg.");
+        if (req.PreferredSpecies?.Length > 80)
+            return BadRequest("Preferred species name cannot exceed 80 characters.");
+        if (req.Notes?.Length > 300)
+            return BadRequest("Notes cannot exceed 300 characters.");
+
+        BuyerPreference? pref = null;
+        if (req.Id.HasValue && req.Id.Value > 0)
+        {
+            pref = await _context.BuyerPreferences
+                .FirstOrDefaultAsync(p => p.Id == req.Id.Value && p.BuyerId == buyerId);
+        }
 
         if (pref == null)
         {
@@ -85,20 +130,39 @@ public class BuyerMatchController : ControllerBase
             _context.BuyerPreferences.Add(pref);
         }
 
-        pref.PreferredSpecies = req.PreferredSpecies;
+        pref.PreferredSpecies = req.PreferredSpecies ?? string.Empty;
         pref.MinQuantityKg    = req.MinQuantityKg;
         pref.MaxQuantityKg    = req.MaxQuantityKg;
         pref.MaxPricePerKg    = req.MaxPricePerKg;
-        pref.PreferredCity    = req.PreferredCity;
-        pref.Notes            = req.Notes;
+        pref.PreferredCity    = req.PreferredCity ?? string.Empty;
+        pref.Notes            = req.Notes ?? string.Empty;
         pref.UpdatedAt        = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
         return Ok(pref);
     }
 
+    /// DELETE /api/BuyerMatch/preferences/{id}
+    /// Deletes a specific preference from the buyer's list.
+    [HttpDelete("preferences/{id:int}")]
+    [Authorize]
+    public async Task<IActionResult> DeletePreferenceById(int id)
+    {
+        var idClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(idClaim) || !int.TryParse(idClaim, out var buyerId))
+            return Unauthorized("User ID not found in token.");
+
+        var pref = await _context.BuyerPreferences
+            .FirstOrDefaultAsync(p => p.Id == id && p.BuyerId == buyerId);
+        if (pref == null) return NotFound("Preference not found.");
+
+        _context.BuyerPreferences.Remove(pref);
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Preference deleted successfully." });
+    }
+
     /// DELETE /api/BuyerMatch/preferences/me
-    /// Deletes current buyer's preference.
+    /// Deletes all preferences for current buyer.
     [HttpDelete("preferences/me")]
     [Authorize]
     public async Task<IActionResult> DeleteMyPreference()
@@ -107,12 +171,12 @@ public class BuyerMatchController : ControllerBase
         if (string.IsNullOrEmpty(idClaim) || !int.TryParse(idClaim, out var buyerId))
             return Unauthorized("User ID not found in token.");
 
-        var pref = await _context.BuyerPreferences.FirstOrDefaultAsync(p => p.BuyerId == buyerId);
-        if (pref == null) return NotFound("No preference found to delete.");
+        var prefs = await _context.BuyerPreferences.Where(p => p.BuyerId == buyerId).ToListAsync();
+        if (!prefs.Any()) return NotFound("No preferences found to delete.");
 
-        _context.BuyerPreferences.Remove(pref);
+        _context.BuyerPreferences.RemoveRange(prefs);
         await _context.SaveChangesAsync();
-        return Ok(new { message = "Preferences deleted successfully." });
+        return Ok(new { message = "All preferences deleted successfully." });
     }
 
     // ── Buyer list / profile ──────────────────────────────────────────────────
@@ -225,59 +289,96 @@ public class BuyerMatchController : ControllerBase
     [HttpPost("recommend")]
     public async Task<IActionResult> GetRecommendations([FromBody] BuyerPreferenceRequest? req = null)
     {
-        BuyerPreference? savedPref = null;
-
-        // Try to load saved preference for current buyer
         var buyerIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (buyerIdClaim != null)
-        {
-            int buyerId = int.Parse(buyerIdClaim);
-            savedPref = await _context.BuyerPreferences
-                .FirstOrDefaultAsync(p => p.BuyerId == buyerId);
+        int? buyerId = int.TryParse(buyerIdClaim, out var bid) ? bid : null;
 
-            // Build request from saved pref if no explicit one provided
-            if (req == null && savedPref != null)
-            {
-                req = new BuyerPreferenceRequest
-                {
-                    PreferredSpecies = savedPref.PreferredSpecies,
-                    MinQuantityKg    = savedPref.MinQuantityKg,
-                    MaxQuantityKg    = savedPref.MaxQuantityKg,
-                    MaxPricePerKg    = savedPref.MaxPricePerKg,
-                    PreferredCity    = savedPref.PreferredCity,
-                    Notes            = savedPref.Notes,
-                };
-            }
+        List<BuyerPreference> savedPrefs = new();
+        if (buyerId.HasValue)
+        {
+            savedPrefs = await _context.BuyerPreferences
+                .Where(p => p.BuyerId == buyerId.Value)
+                .OrderByDescending(p => p.UpdatedAt)
+                .ToListAsync();
         }
 
-        req ??= new BuyerPreferenceRequest(); // blank pref → show all catches scored by quality/freshness
+        bool hasExplicitPref = req != null && (
+            !string.IsNullOrWhiteSpace(req.PreferredSpecies) ||
+            req.MinQuantityKg > 0 ||
+            req.MaxQuantityKg < 99999 ||
+            req.MaxPricePerKg < 99999 ||
+            !string.IsNullOrWhiteSpace(req.PreferredCity)
+        );
 
         var catches = await _context.Catches
             .Include(c => c.Fisherman)
             .Where(c => c.Status == "Published" || c.Status == "Bidding")
             .ToListAsync();
 
-        // Load bid history for this buyer (if authenticated)
         var bidHistory = new List<Bid>();
-        if (buyerIdClaim != null)
+        if (buyerId.HasValue)
         {
-            int buyerId = int.Parse(buyerIdClaim);
             bidHistory = await _context.Bids
                 .Include(b => b.Catch)
-                .Where(b => b.BuyerId == buyerId)
+                .Where(b => b.BuyerId == buyerId.Value)
                 .ToListAsync();
         }
 
-        var scored = catches
-            .Select(c => ScoreMatch(c, req, bidHistory))
-            .Where(m => m.MatchScore >= 20)
-            .OrderByDescending(m => m.MatchScore)
-            .Take(10)
-            .ToList();
+        List<MatchedCatch> scored;
+        if (hasExplicitPref && req != null)
+        {
+            scored = catches
+                .Select(c => ScoreMatch(c, req, bidHistory))
+                .Where(m => m.MatchScore >= 20)
+                .OrderByDescending(m => m.MatchScore)
+                .Take(10)
+                .ToList();
+        }
+        else if (savedPrefs.Any())
+        {
+            // Score against each saved preference and pick highest match
+            scored = catches
+                .Select(c => {
+                    var best = savedPrefs
+                        .Select(p => ScoreMatch(c, new BuyerPreferenceRequest {
+                            Id = p.Id,
+                            PreferredSpecies = p.PreferredSpecies,
+                            MinQuantityKg = p.MinQuantityKg,
+                            MaxQuantityKg = p.MaxQuantityKg,
+                            MaxPricePerKg = p.MaxPricePerKg,
+                            PreferredCity = p.PreferredCity,
+                            Notes = p.Notes,
+                        }, bidHistory))
+                        .OrderByDescending(m => m.MatchScore)
+                        .First();
+                    return best;
+                })
+                .Where(m => m.MatchScore >= 20)
+                .OrderByDescending(m => m.MatchScore)
+                .Take(10)
+                .ToList();
+        }
+        else
+        {
+            scored = catches
+                .Select(c => ScoreMatch(c, new BuyerPreferenceRequest(), bidHistory))
+                .Where(m => m.MatchScore >= 20)
+                .OrderByDescending(m => m.MatchScore)
+                .Take(10)
+                .ToList();
+        }
 
         return Ok(new {
-            preferences    = req,
-            hasSavedPref   = savedPref != null,
+            preferences    = req ?? (savedPrefs.Count > 0 ? new BuyerPreferenceRequest {
+                Id = savedPrefs[0].Id,
+                PreferredSpecies = savedPrefs[0].PreferredSpecies,
+                MinQuantityKg = savedPrefs[0].MinQuantityKg,
+                MaxQuantityKg = savedPrefs[0].MaxQuantityKg,
+                MaxPricePerKg = savedPrefs[0].MaxPricePerKg,
+                PreferredCity = savedPrefs[0].PreferredCity,
+                Notes = savedPrefs[0].Notes,
+            } : new BuyerPreferenceRequest()),
+            savedPreferences = savedPrefs,
+            hasSavedPref   = savedPrefs.Any(),
             totalAvailable = catches.Count,
             recommendations = scored,
         });
@@ -301,6 +402,12 @@ public class BuyerMatchController : ControllerBase
         {
             score += 40;
             reasons.Add("✓ Exact species match");
+        }
+        else if (c.FishSpecies.Contains(pref.PreferredSpecies, StringComparison.OrdinalIgnoreCase) ||
+                 pref.PreferredSpecies.Contains(c.FishSpecies, StringComparison.OrdinalIgnoreCase))
+        {
+            score += 38;
+            reasons.Add("✓ Species match");
         }
         else
         {

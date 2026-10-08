@@ -31,6 +31,7 @@ public class WeatherController : ControllerBase
     /// GET /api/Weather/current?location=Negombo
     /// Returns current weather for a Sri Lanka fishing/logistics location.
     [HttpGet("current")]
+    [AllowAnonymous]
     public async Task<IActionResult> GetCurrentWeather([FromQuery] string location = "Negombo")
     {
         if (string.IsNullOrWhiteSpace(location))
@@ -44,6 +45,7 @@ public class WeatherController : ControllerBase
     /// GET /api/Weather/fishing-safety?location=Negombo
     /// Returns a simplified fishing safety assessment for fishermen.
     [HttpGet("fishing-safety")]
+    [AllowAnonymous]
     public async Task<IActionResult> GetFishingSafety([FromQuery] string location = "Negombo")
     {
         var w = await _weather.GetWeatherAsync(location);
@@ -70,6 +72,7 @@ public class WeatherController : ControllerBase
     /// GET /api/Weather/logistics?from=Negombo&to=Colombo
     /// Returns weather-based logistics advisory for a delivery route.
     [HttpGet("logistics")]
+    [AllowAnonymous]
     public async Task<IActionResult> GetLogisticsWeather(
         [FromQuery] string from = "Negombo",
         [FromQuery] string to   = "Colombo")

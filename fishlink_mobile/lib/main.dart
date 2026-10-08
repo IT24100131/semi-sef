@@ -3584,7 +3584,9 @@ class _AiPriceDialogState extends State<_AiPriceDialog> {
 
   Future<void> _loadPrediction() async {
     try {
-      final res = await ApiClient().predictPrice(widget.species);
+      final res = await ApiClient()
+          .predictPrice(widget.species)
+          .timeout(const Duration(seconds: 3));
       if (!mounted) return;
       setState(() {
         _loading = false;
@@ -3670,7 +3672,7 @@ class _AiPriceDialogState extends State<_AiPriceDialog> {
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
                     Text(
-                      'Querying ASP.NET Core API & Market AI...',
+                      'Analyzing Market Prices with AI...',
                       style: TextStyle(fontSize: 13, color: Colors.grey),
                     ),
                   ],
@@ -3880,6 +3882,9 @@ class _AiPriceDialogState extends State<_AiPriceDialog> {
                 ],
               ),
             ),
+      actionsOverflowDirection: VerticalDirection.down,
+      actionsOverflowButtonSpacing: 8,
+      actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       actions: [
         if (!_loading && widget.onApplyPrice != null)
           FilledButton.tonal(
@@ -3887,13 +3892,16 @@ class _AiPriceDialogState extends State<_AiPriceDialog> {
               widget.onApplyPrice!(_avgPrice);
               Navigator.pop(context);
             },
-            child: Text('Apply Rs. ${_avgPrice.toInt()}/kg'),
+            child: Text(
+              'Apply Rs. ${_avgPrice.toInt()}/kg',
+              style: const TextStyle(fontSize: 13),
+            ),
           ),
         FilledButton(
           style: FilledButton.styleFrom(
               backgroundColor: const Color(0xff005b96)),
           onPressed: () => Navigator.pop(context),
-          child: const Text('Done'),
+          child: const Text('Done', style: TextStyle(fontSize: 13)),
         ),
       ],
     );
@@ -11642,6 +11650,7 @@ class _AuthShell extends StatelessWidget {
             SafeArea(
               child: Center(
                 child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 20,
                     vertical: 24,

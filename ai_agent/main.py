@@ -80,14 +80,17 @@ class BuyerMatchRequest(BaseModel):
 class LogisticsRequest(BaseModel):
     """Request to Logistics Scheduling Agent — called after bid is accepted."""
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-    workflow_id:        str
+    workflow_id:        Optional[str] = None
     catch_id:           int
-    quantity_kg:        float
-    fish_species:       str
+    quantity_kg:        float = 50.0
+    fish_species:       str = "Fish"
     pickup_location:    str = "Negombo"
     delivery_location:  str = "Colombo"
     delivery_deadline:  Optional[str] = None   # ISO datetime string
     buyer_name:         str = ""
+    buyer_id:           Optional[int] = None
+    order_id:           Optional[int] = None
+    weight_kg:          Optional[float] = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -156,8 +159,16 @@ def tool_get_route(from_loc: str, to_loc: str) -> list[dict]:
         return data.get("routes", [])
     except Exception as e:
         print(f"[tool_get_route] {e}")
-        return [{"routeName": "Route A (Direct)", "distanceKm": 50,
-                 "estimatedMinutes": 90, "notes": "Estimated"}]
+        fl = (from_loc or "").lower()
+        tl = (to_loc or "").lower()
+        if "anuradhapura" in fl or "anuradhapura" in tl:
+            return [{"routeName": "Route A (Central Expressway E04 & Kurunegala - Anuradhapura Highway A28)", "distanceKm": 205, "estimatedMinutes": 270, "notes": "Inland corridor"}]
+        if "galle" in fl or "galle" in tl:
+            return [{"routeName": "Route A (Southern Expressway E01 via Kottawa Interchange)", "distanceKm": 118, "estimatedMinutes": 95, "notes": "Expressway E01"}]
+        if "kandy" in fl or "kandy" in tl:
+            return [{"routeName": "Route A (Colombo - Kandy Road A01 via Ambepussa & Kadugannawa Pass)", "distanceKm": 121, "estimatedMinutes": 160, "notes": "Highway A01"}]
+        return [{"routeName": "Route A (Colombo - Katunayake Expressway E03 via Peliyagoda)", "distanceKm": 38,
+                 "estimatedMinutes": 45, "notes": "Expressway E03"}]
 
 
 # ── Tool 5: get_weather ──────────────────────────────────────────────────────
@@ -325,9 +336,14 @@ def run_logistics_agent(req: "WorkflowRequest", recommended_price: float) -> dic
             f"selected {selected_route['routeName']} (lower flood risk)"
         )
     else:
-        selected_route = routes[0] if routes else {
-            "routeName": "Route A (Direct)", "distanceKm": 50, "estimatedMinutes": 90
+        fl = (pickup or "").lower()
+        tl = (delivery or "").lower()
+        default_route = {
+            "routeName": "Route A (Central Expressway E04 & Kurunegala - Anuradhapura Highway A28)", "distanceKm": 205, "estimatedMinutes": 270
+        } if ("anuradhapura" in fl or "anuradhapura" in tl) else {
+            "routeName": "Route A (Colombo - Katunayake Expressway E03 via Peliyagoda)", "distanceKm": 38, "estimatedMinutes": 45
         }
+        selected_route = routes[0] if routes else default_route
         if rain_expected:
             reasoning.append(f"⚠️ Rain expected but only one route available — allow extra time")
         else:
@@ -783,8 +799,12 @@ def get_available_catches(token: str | None = None) -> list[dict]:
 
 def score_catch(catch: dict, pref: BuyerMatchRequest) -> dict:
     score = 0; reasons = []
-    if catch["fishSpecies"].lower() == pref.species.lower():
+    if not pref.species:
+        score += 20; reasons.append("~ No species preference set")
+    elif catch["fishSpecies"].lower() == pref.species.lower():
         score += 40; reasons.append("✓ Exact species match")
+    elif pref.species.lower() in catch["fishSpecies"].lower() or catch["fishSpecies"].lower() in pref.species.lower():
+        score += 38; reasons.append("✓ Species match")
     else:
         reasons.append(f"✗ Species: {catch['fishSpecies']} (wanted {pref.species})")
     qty = float(catch["quantityKg"])
@@ -985,6 +1005,11 @@ async def create_logistics_plan(req: LogisticsRequest, background_tasks: Backgro
 
 
 def _run_logistics_background(req: LogisticsRequest):
+    if req.weight_kg is not None:
+        req.quantity_kg = req.weight_kg
+    if not req.workflow_id:
+        req.workflow_id = f"WF-LOG-{req.catch_id}"
+
     send_status_update(req.workflow_id, "Logistics", "InProgress",
         f"Running Logistics Scheduling Agent for {req.fish_species} "
         f"({req.quantity_kg}kg) from {req.pickup_location} to {req.delivery_location}...")
@@ -1021,7 +1046,7 @@ def health():
     price_ok = dotnet_ok = False
     try: price_ok  = requests.get("http://localhost:8001/health", timeout=2).ok
     except: pass
-    try: dotnet_ok = requests.get(f"{ASP_NET}/api/Catches/market-stats", timeout=2).ok
+    try: dotnet_ok = requests.get(f"{ASP_NET}/health", timeout=5).ok
     except: pass
     return {
         "status":     "AI Agent running",
